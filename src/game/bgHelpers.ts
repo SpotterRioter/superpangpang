@@ -1,7 +1,7 @@
 import { GROUND_Y, WORLD_W } from './levels';
 import { ThemeId } from './types';
 
-export const PARALLAX_PAD = 44;
+export const PARALLAX_PAD = 58;
 export const BLEED_L = -PARALLAX_PAD;
 export const BLEED_R = WORLD_W + PARALLAX_PAD;
 export const BLEED_W = WORLD_W + PARALLAX_PAD * 2;

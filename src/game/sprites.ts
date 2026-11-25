@@ -938,7 +938,7 @@ function drawWorldContinents(ctx: CanvasRenderingContext2D): void {
   landPolys.forEach(drawPoly);
 }
 
-function drawAirplane(ctx: CanvasRenderingContext2D, x: number, y: number, angle: number, bgTime: number): void {
+export function drawAirplane(ctx: CanvasRenderingContext2D, x: number, y: number, angle: number, bgTime: number): void {
   ctx.save();
   ctx.translate(x + 12, y + 18);
   ctx.rotate(angle);
@@ -993,7 +993,7 @@ function drawAirplane(ctx: CanvasRenderingContext2D, x: number, y: number, angle
   ctx.restore();
 }
 
-function drawSpaceship(ctx: CanvasRenderingContext2D, x: number, y: number, angle: number, bgTime: number): void {
+export function drawSpaceship(ctx: CanvasRenderingContext2D, x: number, y: number, angle: number, bgTime: number): void {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(angle);

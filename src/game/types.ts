@@ -1,8 +1,11 @@
+import { AchievementDef } from './achievements';
+
 export type GameMode = 'STORY' | 'ARCADE';
 
 export type GameState =
   | 'START'
   | 'STORY_CUTSCENE'
+  | 'CINEMATIC'
   | 'PLAYING'
   | 'PAUSED'
   | 'STAGE_CLEAR'
@@ -285,4 +288,10 @@ export interface HudSnapshot {
   activeRadioComm: RadioCommDef | null;
   storyUnlockedIndex: number;
   storyCompleted: boolean;
+  bossActive: boolean;
+  bossName: string;
+  achievementToast: AchievementDef | null;
+  unlockedAchievementIds: string[];
+  continuesUsed: number;
+  runValid: boolean;
 }

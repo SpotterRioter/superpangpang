@@ -1,3 +1,4 @@
+import { ENRICHMENTS } from './saga';
 import {
   CharacterId,
   DialogueLine,
@@ -1007,7 +1008,11 @@ export function buildStoryCutscene(
   const entry = STAGE_STORY_SCRIPT[levelIndex];
   if (!entry) return null;
   const act = STORY_ACTS.find((a) => a.actNumber === entry.actNumber) || STORY_ACTS[0];
-  const lines = kind === 'intro' ? entry.introLines : entry.outroLines;
+  const extra = ENRICHMENTS[entry.levelId];
+  const lines =
+    kind === 'intro'
+      ? [...(extra?.before ?? []), ...entry.introLines, ...(extra?.after ?? [])]
+      : entry.outroLines;
   if (!lines || lines.length === 0) return null;
 
   return {

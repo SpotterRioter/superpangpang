@@ -4,13 +4,24 @@ import {
   ArrowLeft,
   BookOpen,
   ChevronRight,
+  Crosshair,
   Eye,
   FastForward,
+  Film,
   Play,
   Radio,
+  Skull,
   Users
 } from 'lucide-react';
+import { getBossByAct } from '../game/boss';
+import {
+  CinematicDef,
+  getActIntroCinematic,
+  getActVictoryCinematic,
+  getFinaleCinematic
+} from '../game/cinematics';
 import { LEVELS } from '../game/levels';
+import { BOSS_SCRIPT, ENRICHMENTS, buildBossCutscene } from '../game/saga';
 import {
   CHARACTERS,
   STAGE_STORY_SCRIPT,
@@ -152,7 +163,6 @@ export function StoryCutsceneOverlay({
 
           <div className="flex-1 min-w-0 flex flex-col justify-between min-h-[96px] sm:min-h-[108px]">
             <div>
-              {/* Speaker Nameplate & Frequency */}
               <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
                 <div className="flex items-center gap-2">
                   <span
@@ -170,7 +180,6 @@ export function StoryCutsceneOverlay({
                 </span>
               </div>
 
-              {/* Typewriter Dialogue Body */}
               <p className="text-sm sm:text-base text-slate-100 leading-relaxed font-medium">
                 “{fullText.slice(0, charCount)}”
                 {!isDoneTyping && (
@@ -179,7 +188,6 @@ export function StoryCutsceneOverlay({
               </p>
             </div>
 
-            {/* Footer Progress Dots & Prompt */}
             <div className="flex items-center justify-between gap-2 mt-3 pt-2 border-t border-slate-800/90">
               <div className="flex items-center gap-1.5">
                 {lines.map((_, idx) => (
@@ -201,7 +209,7 @@ export function StoryCutsceneOverlay({
                   ? 'REVELAR'
                   : safeIdx < lines.length - 1
                   ? 'CONTINUAR'
-                  : 'INICIAR MISSÃO'}
+                  : 'AVANÇAR'}
                 <ChevronRight className="w-3.5 h-3.5" />
               </span>
             </div>
@@ -252,7 +260,7 @@ export function RadioCommToast({ comm }: { comm: RadioCommDef | null }) {
 }
 
 // =========================================================================
-// STORY SCRIPT & CHARACTER DOSSIER MODAL (DIÁRIO DE BORDO)
+// STORY SCRIPT, CINEMATICS & BOSS DOSSIER MODAL (DIÁRIO DE BORDO)
 // =========================================================================
 interface StoryJournalModalProps {
   unlockedStageIndex: number;
@@ -260,6 +268,8 @@ interface StoryJournalModalProps {
   onClose: () => void;
   onPlayStoryStage: (stageIndex: number) => void;
   onReplayCutscene: (cutscene: StoryCutsceneDef) => void;
+  onReplayCinematic: (cinematic: CinematicDef) => void;
+  onStartBoss: (actNumber: number) => void;
 }
 
 const CHARACTER_ORDER: CharacterId[] = ['leo', 'maya', 'heitor', 'vesper', 'aria'];
@@ -269,7 +279,9 @@ export function StoryJournalModal({
   storyCompleted,
   onClose,
   onPlayStoryStage,
-  onReplayCutscene
+  onReplayCutscene,
+  onReplayCinematic,
+  onStartBoss
 }: StoryJournalModalProps) {
   const [tab, setTab] = useState<'script' | 'cast'>('script');
   const [showFullSpoilers, setShowFullSpoilers] = useState(false);
@@ -277,19 +289,30 @@ export function StoryJournalModal({
 
   const actDef = STORY_ACTS.find((a) => a.actNumber === selectedAct) || STORY_ACTS[0];
   const actEntries = STAGE_STORY_SCRIPT.filter((e) => e.actNumber === selectedAct);
+  const actBoss = getBossByAct(selectedAct);
+  const actBossScript = BOSS_SCRIPT[actBoss.id];
+
+  const actStartIdx = actDef.stageRange[0] - 1;
+  const actEndIdx = actDef.stageRange[1] - 1;
+  const actIntroUnlocked = storyCompleted || showFullSpoilers || unlockedStageIndex >= actStartIdx;
+  const actVictoryUnlocked =
+    storyCompleted ||
+    showFullSpoilers ||
+    unlockedStageIndex > actEndIdx ||
+    (selectedAct === 5 && storyCompleted);
 
   return (
     <div className="absolute inset-0 z-[35] flex items-center justify-center p-3 sm:p-4 bg-[#050814]/90">
-      <div className="animate-modal-pop w-full max-w-[860px] max-h-[95%] flex flex-col rounded-2xl bg-[#0f172e] border border-[#34487a] shadow-[0_24px_60px_rgba(0,0,0,0.88)] overflow-hidden">
+      <div className="animate-modal-pop w-full max-w-[880px] max-h-[95%] flex flex-col rounded-2xl bg-[#0f172e] border border-[#34487a] shadow-[0_24px_60px_rgba(0,0,0,0.88)] overflow-hidden">
         {/* Modal Header */}
         <div className="px-5 pt-4 pb-3 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="font-arcade text-xs sm:text-sm text-amber-300 flex items-center gap-2">
               <BookOpen className="w-4 h-4 text-cyan-300" />
-              OPERAÇÃO ESFERA PRISMA — DIÁRIO & ROTEIRO
+              OPERAÇÃO ESFERA PRISMA — ROTEIRO, CINEMATICS & CHEFES
             </h2>
             <p className="text-xs text-slate-300 mt-1">
-              Acompanhe os 5 atos da campanha, perfis de personagens e reveja diálogos da história.
+              Explore os 5 atos, assista às cinematics de abertura/vitória e desafie os chefes aéreos.
             </p>
           </div>
           <button
@@ -313,7 +336,7 @@ export function StoryJournalModal({
                   : 'text-slate-400 hover:text-slate-200 border border-transparent'
               }`}
             >
-              <BookOpen className="w-3.5 h-3.5" /> Roteiro (5 Atos)
+              <BookOpen className="w-3.5 h-3.5" /> Atos, Cinematics & Chefes
             </button>
             <button
               type="button"
@@ -335,7 +358,7 @@ export function StoryJournalModal({
               className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700 inline-flex items-center gap-1.5 cursor-pointer"
             >
               <Eye className="w-3.5 h-3.5 text-cyan-300" />
-              {showFullSpoilers ? 'Ocultar Capítulos Futuros' : 'Liberar Roteiro Completo'}
+              {showFullSpoilers ? 'Ocultar Futuros' : 'Liberar Tudo'}
             </button>
           )}
         </div>
@@ -360,14 +383,55 @@ export function StoryJournalModal({
               ))}
             </div>
 
-            {/* Act Synopsis & Chapter List */}
+            {/* Act Synopsis, Cinematics Buttons, Chapters & Act Boss */}
             <div className="p-5 overflow-y-auto stage-scroll space-y-3">
               <div className="rounded-xl bg-[#090e1f] border border-cyan-500/30 p-3.5">
-                <div className="font-arcade text-xs text-amber-300">{actDef.title}</div>
-                <div className="text-xs font-bold text-cyan-300 mt-0.5">{actDef.subtitle}</div>
-                <p className="text-xs sm:text-sm text-slate-300 mt-1.5 leading-relaxed">
-                  {actDef.synopsis}
-                </p>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex-1 min-w-[220px]">
+                    <div className="font-arcade text-xs text-amber-300">{actDef.title}</div>
+                    <div className="text-xs font-bold text-cyan-300 mt-0.5">{actDef.subtitle}</div>
+                    <p className="text-xs sm:text-sm text-slate-300 mt-1.5 leading-relaxed">
+                      {actDef.synopsis}
+                    </p>
+                  </div>
+
+                  {/* Act Intro / Victory / Finale Cinematics Replay Buttons */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {actIntroUnlocked && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const c = getActIntroCinematic(selectedAct);
+                          if (c) onReplayCinematic(c);
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/60 text-xs font-bold text-cyan-200 inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Film className="w-3.5 h-3.5" /> Intro do Ato
+                      </button>
+                    )}
+                    {actVictoryUnlocked && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const c = getActVictoryCinematic(selectedAct);
+                          if (c) onReplayCinematic(c);
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/60 text-xs font-bold text-emerald-200 inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Film className="w-3.5 h-3.5" /> Vitória do Ato
+                      </button>
+                    )}
+                    {selectedAct === 5 && actVictoryUnlocked && (
+                      <button
+                        type="button"
+                        onClick={() => onReplayCinematic(getFinaleCinematic())}
+                        className="px-3 py-1.5 rounded-lg bg-amber-400/25 hover:bg-amber-400/35 border border-amber-300 text-xs font-bold text-amber-200 inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Film className="w-3.5 h-3.5" /> Cinematic Final
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
 
               {actEntries.map((entry) => {
@@ -375,6 +439,12 @@ export function StoryJournalModal({
                 const lvl = LEVELS[idx];
                 const isUnlocked =
                   storyCompleted || showFullSpoilers || idx <= unlockedStageIndex;
+                const extra = ENRICHMENTS[entry.levelId];
+                const fullIntroLines = [
+                  ...(extra?.before ?? []),
+                  ...entry.introLines,
+                  ...(extra?.after ?? [])
+                ];
 
                 return (
                   <div
@@ -430,9 +500,8 @@ export function StoryJournalModal({
                         <p className="text-xs text-slate-300 mt-2 leading-relaxed">
                           {entry.journalSummary}
                         </p>
-                        {/* Expandable preview of dialogue script lines */}
                         <div className="mt-2.5 pl-3 border-l-2 border-slate-700 space-y-1">
-                          {entry.introLines.map((ln, lIdx) => (
+                          {fullIntroLines.map((ln, lIdx) => (
                             <p key={lIdx} className="text-[11px] text-slate-300/90">
                               <strong style={{ color: CHARACTERS[ln.speaker].accentColor }}>
                                 {CHARACTERS[ln.speaker].name.split(' ')[0]}:
@@ -450,6 +519,56 @@ export function StoryJournalModal({
                   </div>
                 );
               })}
+
+              {/* Sonic Wings Act Boss Dossier Card */}
+              <div className="rounded-xl bg-gradient-to-r from-[#280d1e] to-[#131836] border border-rose-500/50 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="font-arcade text-[10px] text-rose-400 flex items-center gap-1.5">
+                      <Skull className="w-3.5 h-3.5" /> CHEFE DO ATO {selectedAct} (ESTILO SONIC WINGS)
+                    </div>
+                    <div className="text-sm font-extrabold text-white mt-0.5">
+                      {actBoss.name} — <span className="text-amber-300">{actBoss.title}</span>
+                    </div>
+                  </div>
+
+                  {(actVictoryUnlocked || showFullSpoilers || unlockedStageIndex >= actEndIdx) && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const pre = buildBossCutscene(selectedAct, 'pre');
+                          if (pre) onReplayCutscene(pre);
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-900/90 hover:bg-slate-800 border border-slate-600 text-[11px] font-bold text-slate-200 cursor-pointer"
+                      >
+                        Diálogo Chefe
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onStartBoss(selectedAct)}
+                        className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 border border-rose-300 text-[11px] font-bold text-white inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Crosshair className="w-3.5 h-3.5" /> Enfrentar Chefe
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {(actVictoryUnlocked || showFullSpoilers || unlockedStageIndex >= actEndIdx) &&
+                  actBossScript && (
+                    <div className="mt-2.5 pl-3 border-l-2 border-rose-500/50 space-y-1">
+                      {actBossScript.pre.map((ln, idx) => (
+                        <p key={idx} className="text-[11px] text-slate-200/90">
+                          <strong style={{ color: CHARACTERS[ln.speaker].accentColor }}>
+                            {CHARACTERS[ln.speaker].name.split(' ')[0]}:
+                          </strong>{' '}
+                          “{ln.text}”
+                        </p>
+                      ))}
+                    </div>
+                  )}
+              </div>
             </div>
           </div>
         ) : (

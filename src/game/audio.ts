@@ -1,6 +1,12 @@
 import { StoryMusicMood, ThemeId } from './types';
 
-export type OstTrackKey = ThemeId | 'travel' | 'title' | StoryMusicMood;
+export type OstTrackKey =
+  | ThemeId
+  | 'travel'
+  | 'title'
+  | StoryMusicMood
+  | 'boss_battle'
+  | 'boss_final';
 
 type InstrumentProfile =
   | 'koto'
@@ -387,6 +393,61 @@ export const OST_TRACKS: Record<OstTrackKey, OstTrackDef> = {
       ['C4', 'E4', 'G4'], ['A3', 'C4', 'E4'], ['F3', 'A3', 'C4'], ['G3', 'B3', 'D4'],
       ['F3', 'A3', 'C4'], ['A3', 'C4', 'E4'], ['E3', 'G3', 'B3'], ['G3', 'B3', 'D4'],
       ['F3', 'A3', 'C4'], ['G3', 'B3', 'D4'], ['C4', 'E4', 'G4'], ['C4', 'E4', 'G4']
+    ]
+  },
+
+  // =========================================================================
+  // BOSS BATTLE THEMES (Sonic Wings style aerial bosses)
+  // =========================================================================
+  boss_battle: {
+    title: 'Fortaleza nos Céus — Batalha de Chefe',
+    bpm: 156,
+    instrument: 'bosssynth',
+    drumStyle: 'boss',
+    arpMode: 'arp',
+    melody: seq(
+      ['D5', 0, 'D5', 'F5', 'A5', 0, 'G5', 'F5', 'E5', 0, 'D5', 'E5', 'F5', 0, 'A5', 0],
+      ['Bb5', 0, 'A5', 'G5', 'F5', 0, 'E5', 'D5', 'Cs5', 0, 'D5', 'E5', 'A4', 0, 0, 0],
+      ['D5', 0, 'F5', 'A5', 'D6', 0, 'C6', 'Bb5', 'A5', 0, 'G5', 'F5', 'E5', 'F5', 'G5', 'A5'],
+      ['Bb5', 'A5', 'G5', 'F5', 'E5', 'D5', 'Cs5', 'E5', 'A5', 0, 'Cs6', 'A5', 'D6', 0, 0, 0]
+    ),
+    bass: seq(
+      ['D2', 'D2', 'D3', 'D2', 'D2', 'D2', 'D3', 'D2', 'D2', 'D2', 'D3', 'D2', 'D2', 'D2', 'D3', 'D2'],
+      ['Bb2', 'Bb2', 'Bb3', 'Bb2', 'Bb2', 'Bb2', 'Bb3', 'Bb2', 'C3', 'C3', 'C4', 'C3', 'C3', 'C3', 'C4', 'C3'],
+      ['G2', 'G2', 'G3', 'G2', 'G2', 'G2', 'G3', 'G2', 'A2', 'A2', 'A3', 'A2', 'A2', 'A2', 'Cs3', 'A2'],
+      ['Bb2', 'Bb2', 'Bb3', 'Bb2', 'A2', 'A2', 'A3', 'A2', 'D2', 'D2', 'D3', 'D2', 'D2', 'D2', 'D3', 0]
+    ),
+    chords: [
+      ['D3', 'F3', 'A3'], ['D3', 'F3', 'A3'], ['Bb3', 'D4', 'F4'], ['C4', 'E4', 'G4'],
+      ['D3', 'F3', 'A3'], ['D3', 'F3', 'A3'], ['G3', 'Bb3', 'D4'], ['A3', 'Cs4', 'E4'],
+      ['Bb3', 'D4', 'F4'], ['Bb3', 'D4', 'F4'], ['C4', 'E4', 'G4'], ['C4', 'E4', 'G4'],
+      ['G3', 'Bb3', 'D4'], ['A3', 'Cs4', 'E4'], ['D3', 'F3', 'A3'], ['D3', 'F3', 'A3']
+    ]
+  },
+
+  boss_final: {
+    title: 'Coração do Olimpo — Chefe Final',
+    bpm: 164,
+    instrument: 'bosssynth',
+    drumStyle: 'boss',
+    arpMode: 'arp',
+    melody: seq(
+      ['E5', 'E5', 'G5', 'B5', 'E6', 0, 'D6', 'B5', 'C6', 0, 'B5', 'A5', 'G5', 0, 'B5', 0],
+      ['E5', 0, 'G5', 'B5', 'A5', 0, 'G5', 'Fs5', 'E5', 0, 'Fs5', 'G5', 'B4', 0, 0, 0],
+      ['C6', 0, 'B5', 'A5', 'G5', 0, 'Fs5', 'E5', 'Fs5', 0, 'G5', 'A5', 'B5', 'C6', 'D6', 'E6'],
+      ['D6', 'C6', 'B5', 'A5', 'G5', 'Fs5', 'E5', 'Fs5', 'G5', 0, 'B5', 'G5', 'E6', 0, 0, 0]
+    ),
+    bass: seq(
+      ['E2', 'E2', 'E3', 'E2', 'E2', 'E2', 'E3', 'E2', 'E2', 'E2', 'E3', 'E2', 'G2', 'G2', 'G3', 'G2'],
+      ['A2', 'A2', 'A3', 'A2', 'A2', 'A2', 'A3', 'A2', 'B2', 'B2', 'B3', 'B2', 'B2', 'B2', 'B3', 'B2'],
+      ['C3', 'C3', 'C4', 'C3', 'C3', 'C3', 'C4', 'C3', 'D3', 'D3', 'D4', 'D3', 'D3', 'D3', 'D4', 'D3'],
+      ['B2', 'B2', 'B3', 'B2', 'A2', 'A2', 'A3', 'A2', 'E2', 'E2', 'E3', 'E2', 'E2', 'E2', 'E3', 0]
+    ),
+    chords: [
+      ['E3', 'G3', 'B3'], ['E3', 'G3', 'B3'], ['A3', 'C4', 'E4'], ['B3', 'D4', 'Fs4'],
+      ['E3', 'G3', 'B3'], ['E3', 'G3', 'B3'], ['A3', 'C4', 'E4'], ['B3', 'Eb4', 'Fs4'],
+      ['C4', 'E4', 'G4'], ['C4', 'E4', 'G4'], ['D3', 'Fs3', 'A3'], ['D3', 'Fs3', 'A3'],
+      ['A3', 'C4', 'E4'], ['B3', 'Eb4', 'Fs4'], ['E3', 'G3', 'B3'], ['E3', 'G3', 'B3']
     ]
   },
 
@@ -1871,6 +1932,34 @@ export class AudioEngine {
   public radioChime(): void {
     this.playSfxTone({ freqStart: 880, freqEnd: 1174.66, duration: 0.065, type: 'sine', volume: 0.07 });
     this.playSfxTone({ freqStart: 1318.5, freqEnd: 1567.98, duration: 0.08, type: 'sine', volume: 0.06, delay: 0.055 });
+  }
+
+  public warningSiren(): void {
+    this.playSfxTone({ freqStart: 520, freqEnd: 900, duration: 0.42, type: 'sawtooth', volume: 0.1 });
+    this.playSfxTone({ freqStart: 900, freqEnd: 520, duration: 0.42, type: 'sawtooth', volume: 0.1, delay: 0.42 });
+  }
+
+  public bossHit(): void {
+    this.playSfxTone({ freqStart: 260, freqEnd: 120, duration: 0.07, type: 'square', volume: 0.1 });
+    this.playSfxNoise({ duration: 0.05, volume: 0.07, filterFreq: 2400, filterType: 'bandpass' });
+  }
+
+  public bossPhase(): void {
+    [220, 330, 440, 660].forEach((n, i) => {
+      this.playSfxTone({ freqStart: n, freqEnd: n * 1.5, duration: 0.18, type: 'sawtooth', volume: 0.1, delay: i * 0.07 });
+    });
+    this.playSfxNoise({ duration: 0.45, volume: 0.14, filterFreq: 900 });
+  }
+
+  public bossExplosion(): void {
+    this.playSfxNoise({ duration: 0.55, volume: 0.22, filterFreq: 700 });
+    this.playSfxTone({ freqStart: 150, freqEnd: 30, duration: 0.5, type: 'sawtooth', volume: 0.16 });
+  }
+
+  public achievement(): void {
+    [659.25, 783.99, 987.77, 1318.5].forEach((n, i) => {
+      this.playSfxTone({ freqStart: n, freqEnd: n, duration: 0.14, type: 'triangle', volume: 0.12, delay: i * 0.075 });
+    });
   }
 
   public shoot(): void {

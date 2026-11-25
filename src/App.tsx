@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Crosshair, FastForward } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Crosshair, FastForward, SkipForward } from 'lucide-react';
+import { AchievementToast } from './components/AchievementsModal';
 import { HudBar } from './components/HudBar';
 import { Overlays } from './components/Overlays';
 import { RadioCommToast } from './components/StoryCutscene';
@@ -39,7 +40,13 @@ const INITIAL_HUD: HudSnapshot = {
   activeCutscene: null,
   activeRadioComm: null,
   storyUnlockedIndex: 0,
-  storyCompleted: false
+  storyCompleted: false,
+  bossActive: false,
+  bossName: '',
+  achievementToast: null,
+  unlockedAchievementIds: [],
+  continuesUsed: 0,
+  runValid: true
 };
 
 export default function App() {
@@ -49,6 +56,7 @@ export default function App() {
   const [hud, setHud] = useState<HudSnapshot>(INITIAL_HUD);
   const [showStageSelect, setShowStageSelect] = useState(false);
   const [showJournal, setShowJournal] = useState(false);
+  const [showAchievements, setShowAchievements] = useState(false);
 
   // Mount isolated 60fps Canvas Engine once
   useEffect(() => {
@@ -84,6 +92,18 @@ export default function App() {
       // Story Cutscene handles its own Space/Enter/Escape via capture listener
       if (eng.getState() === 'STORY_CUTSCENE') return;
 
+      // Cinematic shortcuts
+      if (eng.getState() === 'CINEMATIC') {
+        if ([' ', 'Spacebar', 'Enter', 'ArrowRight'].includes(e.key)) {
+          e.preventDefault();
+          if (!e.repeat) eng.advanceCinematicShot();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          eng.skipCinematic();
+        }
+        return;
+      }
+
       if (['ArrowLeft', 'ArrowRight', 'ArrowUp', ' ', 'Spacebar'].includes(e.key)) {
         e.preventDefault();
       }
@@ -103,7 +123,7 @@ export default function App() {
         e.key === 'Enter'
       ) {
         if (!e.repeat) {
-          if (showStageSelect || showJournal) return;
+          if (showStageSelect || showJournal || showAchievements) return;
           if (eng.getState() === 'START') {
             eng.continueStory();
           } else if (e.key !== 'Enter') {
@@ -117,7 +137,9 @@ export default function App() {
       }
 
       if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') {
-        if (showJournal) {
+        if (showAchievements) {
+          setShowAchievements(false);
+        } else if (showJournal) {
           setShowJournal(false);
         } else if (showStageSelect) {
           setShowStageSelect(false);
@@ -140,26 +162,27 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [showStageSelect, showJournal]);
+  }, [showStageSelect, showJournal, showAchievements]);
 
   const handleOpenStages = () => {
     engineRef.current?.pauseForModal();
     setShowJournal(false);
+    setShowAchievements(false);
     setShowStageSelect(true);
-  };
-
-  const handleCloseStages = () => {
-    setShowStageSelect(false);
   };
 
   const handleOpenJournal = () => {
     engineRef.current?.pauseForModal();
     setShowStageSelect(false);
+    setShowAchievements(false);
     setShowJournal(true);
   };
 
-  const handleCloseJournal = () => {
+  const handleOpenAchievements = () => {
+    engineRef.current?.pauseForModal();
+    setShowStageSelect(false);
     setShowJournal(false);
+    setShowAchievements(true);
   };
 
   const handleSelectArcadeStage = (idx: number) => {
@@ -185,6 +208,8 @@ export default function App() {
       ? 'text-sky-200 border-sky-400/50 bg-sky-950/50'
       : 'text-cyan-200 border-cyan-500/40 bg-cyan-950/40';
 
+  const anyModalOpen = showStageSelect || showJournal || showAchievements;
+
   return (
     <div className="w-screen h-[100dvh] flex items-center justify-center p-2 sm:p-3 overflow-hidden">
       <div className="w-full max-w-[1160px] h-full flex flex-col gap-2">
@@ -193,6 +218,7 @@ export default function App() {
           hud={hud}
           onOpenStages={handleOpenStages}
           onOpenJournal={handleOpenJournal}
+          onOpenAchievements={handleOpenAchievements}
           onToggleMusic={() => engineRef.current?.toggleMusic()}
           onToggleMute={() => engineRef.current?.toggleMute()}
           onTogglePause={() => engineRef.current?.togglePause()}
@@ -205,13 +231,36 @@ export default function App() {
             className="block max-w-full max-h-full aspect-video rounded-xl touch-none"
           />
 
+          {/* Live Achievement Unlocked Toast */}
+          <AchievementToast achievement={hud.achievementToast} />
+
           {/* Non-Blocking Live Story Radio Comms Toast during Gameplay */}
-          {hud.state === 'PLAYING' && !showStageSelect && !showJournal && (
+          {hud.state === 'PLAYING' && !anyModalOpen && (
             <RadioCommToast comm={hud.activeRadioComm} />
           )}
 
+          {/* Cinematic Interactive Controls (Next Shot / Skip Cinematic) */}
+          {hud.state === 'CINEMATIC' && !anyModalOpen && (
+            <div className="absolute right-4 bottom-4 z-20 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => engineRef.current?.advanceCinematicShot()}
+                className="font-arcade text-[9px] sm:text-[10px] px-3.5 py-2 rounded-xl border border-cyan-400/70 bg-[#0d1428]/90 text-cyan-200 hover:bg-[#162447] inline-flex items-center gap-1.5 shadow-lg cursor-pointer"
+              >
+                PRÓXIMO <SkipForward className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => engineRef.current?.skipCinematic()}
+                className="font-arcade text-[9px] sm:text-[10px] px-3.5 py-2 rounded-xl border-2 border-amber-300 bg-[#0d1428]/92 text-amber-300 hover:bg-[#182342] inline-flex items-center gap-1.5 shadow-lg cursor-pointer"
+              >
+                PULAR <FastForward className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           {/* Skip Map Cutscene Action */}
-          {hud.state === 'MAP_TRAVEL' && !showStageSelect && !showJournal && (
+          {hud.state === 'MAP_TRAVEL' && !anyModalOpen && (
             <button
               type="button"
               onClick={() => engineRef.current?.skipMapTravel()}
@@ -226,21 +275,26 @@ export default function App() {
             hud={hud}
             showStageSelect={showStageSelect}
             showJournal={showJournal}
+            showAchievements={showAchievements}
             onStartStoryNew={() => engineRef.current?.startStoryAtLevel(0, true)}
             onContinueStory={() => engineRef.current?.continueStory()}
             onStartStoryStage={handleStartStoryStage}
             onPlayArcadeStart={() => engineRef.current?.startAtLevel(0)}
+            onStartBossDirect={(act) => engineRef.current?.startBossDirect(act)}
             onOpenStages={handleOpenStages}
-            onCloseStages={handleCloseStages}
+            onCloseStages={() => setShowStageSelect(false)}
             onOpenJournal={handleOpenJournal}
-            onCloseJournal={handleCloseJournal}
+            onCloseJournal={() => setShowJournal(false)}
+            onOpenAchievements={handleOpenAchievements}
+            onCloseAchievements={() => setShowAchievements(false)}
             onSelectArcadeStage={handleSelectArcadeStage}
             onPreviewOst={(idx) => engineRef.current?.previewStageTheme(idx)}
             onReplayCutscene={(cut) => engineRef.current?.replayCutscene(cut)}
+            onReplayCinematic={(cin) => engineRef.current?.replayCinematic(cin)}
             onCompleteCutscene={() => engineRef.current?.completeCutscene()}
             onVoiceBlip={handleVoiceBlip}
             onResume={() => engineRef.current?.togglePause()}
-            onRestartStage={() => engineRef.current?.retryCurrentStage()}
+            onUseContinue={() => engineRef.current?.useContinue()}
             onRestartFromBeginning={() => engineRef.current?.returnToTitle()}
             onNextStage={() => engineRef.current?.advanceToNextStage()}
           />

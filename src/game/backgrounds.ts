@@ -37,11 +37,18 @@ import {
   paintSkyscraper,
   paintSunWithBloom
 } from './bgHelpers';
+import {
+  FAR_ZOOM,
+  MID_ZOOM,
+  drawSonicWingsSkyRush,
+  renderCloseCityForeground
+} from './bgCityCloseups';
 
 interface ParallaxBundle {
   sky: HTMLCanvasElement;
   far: HTMLCanvasElement;
   mid: HTMLCanvasElement;
+  near: HTMLCanvasElement;
 }
 
 const parallaxCache = new Map<ThemeId, ParallaxBundle>();
@@ -56,6 +63,12 @@ function createOffscreenLayer(): [HTMLCanvasElement, CanvasRenderingContext2D] {
   return [c, ctx];
 }
 
+function applyMonumentZoom(ctx: CanvasRenderingContext2D, zoom: [number, number]): void {
+  ctx.translate(WORLD_W / 2, GROUND_Y);
+  ctx.scale(zoom[0], zoom[1]);
+  ctx.translate(-WORLD_W / 2, -GROUND_Y);
+}
+
 function getOrRenderParallaxLayers(theme: ThemeId): ParallaxBundle {
   const existing = parallaxCache.get(theme);
   if (existing) {
@@ -68,10 +81,22 @@ function getOrRenderParallaxLayers(theme: ThemeId): ParallaxBundle {
   const [sky, skyCtx] = createOffscreenLayer();
   const [far, farCtx] = createOffscreenLayer();
   const [mid, midCtx] = createOffscreenLayer();
+  const [near, nearCtx] = createOffscreenLayer();
+
+  farCtx.save();
+  applyMonumentZoom(farCtx, FAR_ZOOM[theme]);
+  midCtx.save();
+  applyMonumentZoom(midCtx, MID_ZOOM[theme]);
 
   renderParallaxPlanes(skyCtx, farCtx, midCtx, theme);
 
-  const bundle = { sky, far, mid };
+  midCtx.restore();
+  farCtx.restore();
+
+  const nearRand = mulberry32(theme.split('').reduce((acc, c) => acc * 37 + c.charCodeAt(0), 29));
+  renderCloseCityForeground(nearCtx, theme, nearRand);
+
+  const bundle = { sky, far, mid, near };
   parallaxCache.set(theme, bundle);
   if (parallaxCache.size > MAX_CACHED_THEMES) {
     const oldest = parallaxCache.keys().next().value;
@@ -1905,25 +1930,28 @@ export function drawBackground(
   theme: ThemeId,
   bgTime: number,
   freezeTimer: number,
-  cameraNormX = 0
+  cameraNormX = 0,
+  bossPhase = -1
 ): void {
   const cam = Math.max(-1, Math.min(1, cameraNormX));
   const skyShift = -cam * 6;
-  const farShift = -cam * 17;
+  const farShift = -cam * 18;
   const midShift = -cam * 30;
-  const foreShift = -cam * 42;
+  const nearShift = -cam * 42;
+  const foreShift = -cam * 48;
 
   const layers = getOrRenderParallaxLayers(theme);
 
-  // 1. Blit Sky + Far + Mid cached offscreen canvases with 3D depth parallax
+  // 1. Blit Sky + Far + Mid cached offscreen canvases with zoomed monumental perspective
   ctx.drawImage(layers.sky, -PARALLAX_PAD + skyShift, 0);
   ctx.drawImage(layers.far, -PARALLAX_PAD + farShift, 0);
   ctx.drawImage(layers.mid, -PARALLAX_PAD + midShift, 0);
 
-  // 2. Live destination-specific midground animation (locked to midShift)
+  // 2. Live destination-specific midground animation (locked to midShift + MID_ZOOM)
   const t = bgTime;
   ctx.save();
   ctx.translate(midShift, 0);
+  applyMonumentZoom(ctx, MID_ZOOM[theme]);
 
   switch (theme) {
     case 'fuji': {
@@ -2712,6 +2740,14 @@ export function drawBackground(
     }
   }
   ctx.restore();
+
+  // 2.5 Close-Up Street-Side / Boulevard Architecture Layer (near)
+  ctx.drawImage(layers.near, -PARALLAX_PAD + nearShift, 0);
+
+  // 2.8 Sonic Wings-style high-speed aerial rush during Boss Fights!
+  if (bossPhase >= 0) {
+    drawSonicWingsSkyRush(ctx, bgTime, bossPhase);
+  }
 
   // 3. Foreground Parallax Layer (Framing Palms, Hanging Silk Lanterns, Sky Lanterns & Weather)
   ctx.save();

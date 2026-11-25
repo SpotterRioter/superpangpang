@@ -1,10 +1,12 @@
-import { BookOpen, Globe2, Music, Pause, Play, Volume2, VolumeX } from 'lucide-react';
+import { BookOpen, Globe2, Music, Pause, Play, Trophy, Volume2, VolumeX } from 'lucide-react';
+import { ACHIEVEMENTS } from '../game/achievements';
 import { HudSnapshot } from '../game/types';
 
 interface HudBarProps {
   hud: HudSnapshot;
   onOpenStages: () => void;
   onOpenJournal: () => void;
+  onOpenAchievements: () => void;
   onToggleMusic: () => void;
   onToggleMute: () => void;
   onTogglePause: () => void;
@@ -14,6 +16,7 @@ export function HudBar({
   hud,
   onOpenStages,
   onOpenJournal,
+  onOpenAchievements,
   onToggleMusic,
   onToggleMute,
   onTogglePause
@@ -53,9 +56,9 @@ export function HudBar({
   }
 
   return (
-    <header className="w-full flex items-center justify-between gap-3 px-3.5 py-2 rounded-xl bg-[#0d1428] border border-[#2a3b68] shadow-[0_6px_20px_rgba(0,0,0,0.45)] shrink-0">
+    <header className="w-full flex items-center justify-between gap-2.5 sm:gap-3 px-3 sm:px-3.5 py-2 rounded-xl bg-[#0d1428] border border-[#2a3b68] shadow-[0_6px_20px_rgba(0,0,0,0.45)] shrink-0">
       {/* Left: Score, Record & Stage */}
-      <div className="flex items-center gap-4 min-w-0">
+      <div className="flex items-center gap-3 sm:gap-4 min-w-0">
         <div className="flex flex-col leading-tight">
           <span className="font-arcade text-[8px] text-slate-400 tracking-wider">PONTOS</span>
           <span className="font-arcade text-xs sm:text-[13px] text-white tabular-nums mt-0.5">
@@ -63,7 +66,7 @@ export function HudBar({
           </span>
         </div>
 
-        <div className="hidden sm:flex flex-col leading-tight">
+        <div className="hidden md:flex flex-col leading-tight">
           <span className="font-arcade text-[8px] text-slate-400 tracking-wider">RECORDE</span>
           <span className="font-arcade text-xs sm:text-[13px] text-amber-300 tabular-nums mt-0.5">
             {String(hud.highScore).padStart(6, '0')}
@@ -71,18 +74,23 @@ export function HudBar({
         </div>
 
         <div className="flex flex-col leading-tight min-w-0">
-          <span className="font-arcade text-[8px] text-slate-400 tracking-wider">
-            {hud.gameMode === 'STORY' ? 'HISTÓRIA' : 'ARCADE'} ·{' '}
-            {String(hud.levelId).padStart(2, '0')}/{hud.totalLevels}
+          <span className="font-arcade text-[8px] text-slate-400 tracking-wider flex items-center gap-1.5">
+            <span>
+              {hud.gameMode === 'STORY' ? 'HISTÓRIA' : 'ARCADE'} ·{' '}
+              {String(hud.levelId).padStart(2, '0')}/{hud.totalLevels}
+            </span>
+            {hud.bossActive && (
+              <span className="text-rose-400 font-bold animate-pulse">[CHEFE]</span>
+            )}
           </span>
-          <span className="text-xs sm:text-sm font-bold text-cyan-200 truncate max-w-[130px] md:max-w-[190px] mt-0.5">
+          <span className="text-xs sm:text-sm font-bold text-cyan-200 truncate max-w-[125px] md:max-w-[185px] mt-0.5">
             {hud.stageFlag} {hud.stageName}
           </span>
         </div>
       </div>
 
       {/* Center: Time Gauge + Active Powerup Status */}
-      <div className="flex-1 max-w-[230px] min-w-[92px] flex flex-col gap-1">
+      <div className="flex-1 max-w-[220px] min-w-[84px] flex flex-col gap-1">
         <div className="flex items-center justify-between text-[10px] font-bold tracking-wide">
           <span className="font-arcade text-[8px] text-slate-400">TEMPO</span>
           <span
@@ -112,7 +120,7 @@ export function HudBar({
       </div>
 
       {/* Right: Lives & Utility Controls */}
-      <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
+      <div className="flex items-center gap-2 sm:gap-3 shrink-0">
         <div className="flex flex-col items-end leading-tight">
           <span className="font-arcade text-[8px] text-slate-400 tracking-wider">VIDAS</span>
           <div className="flex items-center gap-1 mt-1" aria-label={`${hud.lives} vidas`}>
@@ -131,8 +139,20 @@ export function HudBar({
         <div className="flex items-center gap-1.5">
           <button
             type="button"
+            onClick={onOpenAchievements}
+            title={`Conquistas (${hud.unlockedAchievementIds.length}/${ACHIEVEMENTS.length})`}
+            aria-label="Abrir conquistas"
+            className="h-9 px-2.5 rounded-lg border border-amber-400/50 bg-[#182447] hover:border-amber-300 text-amber-300 flex items-center justify-center gap-1 transition-colors cursor-pointer"
+          >
+            <Trophy className="w-4 h-4" />
+            <span className="hidden lg:inline text-[11px] font-bold tabular-nums">
+              {hud.unlockedAchievementIds.length}/{ACHIEVEMENTS.length}
+            </span>
+          </button>
+          <button
+            type="button"
             onClick={onOpenJournal}
-            title="Diário de Bordo & Roteiro do Modo História"
+            title="Diário de Bordo, Roteiro & Cinematics"
             aria-label="Abrir roteiro da história"
             className="w-9 h-9 rounded-lg border border-slate-600/80 bg-[#182447] hover:border-amber-300 hover:text-amber-200 text-slate-200 flex items-center justify-center transition-colors cursor-pointer"
           >
@@ -141,7 +161,7 @@ export function HudBar({
           <button
             type="button"
             onClick={onOpenStages}
-            title="Selecionar Fase (24 Destinos)"
+            title="Selecionar Fase ou Chefe (24 Destinos)"
             aria-label="Selecionar fase"
             className="w-9 h-9 rounded-lg border border-slate-600/80 bg-[#182447] hover:border-cyan-400 hover:text-white text-slate-200 flex items-center justify-center transition-colors cursor-pointer"
           >

@@ -1,6 +1,40 @@
+import {
+  ACHIEVEMENTS,
+  AchievementDef,
+  AchievementSave,
+  loadAchievements,
+  saveAchievements
+} from './achievements';
 import { AudioEngine, OST_TRACKS } from './audio';
 import { drawArenaFrame, drawBackground } from './backgrounds';
 import { updateAmbientWeather } from './bgHelpers';
+import {
+  ACT_END_LEVEL_INDEX,
+  ACT_FIRST_LEVEL_INDEX,
+  BossState,
+  bossHitbox,
+  bossHitsPlayer,
+  createBoss,
+  damageBoss,
+  drawBoss,
+  drawBossHud,
+  drawBossProjectiles,
+  drawBossWarning,
+  getBossByAct,
+  isBossVulnerable,
+  updateBoss,
+  updateBossProjectiles
+} from './boss';
+import {
+  CinematicDef,
+  cinematicShotIndex,
+  cinematicShotStart,
+  cinematicTotalDuration,
+  getActIntroCinematic,
+  getActVictoryCinematic,
+  getFinaleCinematic,
+  renderCinematic
+} from './cinematics';
 import {
   BASE_GRAVITY,
   BUBBLE_SPECS,
@@ -13,13 +47,7 @@ import {
   WORLD_H,
   WORLD_W
 } from './levels';
-import {
-  STAGE_STORY_SCRIPT,
-  StorySaveState,
-  buildStoryCutscene,
-  loadStoryProgress,
-  saveStoryProgress
-} from './story';
+import { BOSS_SCRIPT, buildBossCutscene } from './saga';
 import {
   drawBlocks,
   drawBubbles,
@@ -31,6 +59,13 @@ import {
   getBlockThemeStyle,
   renderMapTravel
 } from './sprites';
+import {
+  STAGE_STORY_SCRIPT,
+  StorySaveState,
+  buildStoryCutscene,
+  loadStoryProgress,
+  saveStoryProgress
+} from './story';
 import {
   Block,
   Bubble,
@@ -53,7 +88,14 @@ import {
 const HIGHSCORE_KEY = 'super_pang_world_tour_highscore_v3';
 const SHOWCASE_INDICES = [0, 6, 2, 9, 3, 20, 22, 23];
 
-type PostCutsceneAction = 'START_STAGE' | 'START_TRAVEL' | 'SHOW_VICTORY' | 'RETURN_PREVIOUS';
+type FlowStep =
+  | { type: 'CINEMATIC'; cinematic: CinematicDef }
+  | { type: 'CUTSCENE'; cutscene: StoryCutsceneDef }
+  | { type: 'START_STAGE' }
+  | { type: 'START_BOSS'; act: number }
+  | { type: 'MAP_TRAVEL'; from: number; to: number }
+  | { type: 'SHOW_VICTORY' }
+  | { type: 'RESTORE_STATE'; state: GameState };
 
 export class SuperPangEngine {
   private canvas: HTMLCanvasElement;
@@ -72,14 +114,27 @@ export class SuperPangEngine {
   private showcaseTimer = 0;
 
   private storyProgress: StorySaveState;
+  private achSave: AchievementSave;
+  private achToastQueue: AchievementDef[] = [];
+  private activeAchToast: AchievementDef | null = null;
+  private achToastTimer = 0;
+
+  private flowQueue: FlowStep[] = [];
   private activeCutscene: StoryCutsceneDef | null = null;
-  private postCutsceneAction: PostCutsceneAction = 'START_STAGE';
-  private previousStateBeforeReplay: GameState = 'START';
+  private activeCinematic: CinematicDef | null = null;
+  private cinematicElapsed = 0;
 
   private activeRadioComm: RadioCommDef | null = null;
   private radioCommTimer = 0;
   private midCommTriggered = false;
   private stagePlayElapsed = 0;
+  private stageTookHit = false;
+
+  private boss: BossState | null = null;
+  private bossClearedThisStage = false;
+  private bossLivesLost = 0;
+  private bossDeathExplosionAccum = 0;
+  private bossHitCounter = 0;
 
   private score = 0;
   private highScore = 0;
@@ -135,6 +190,7 @@ export class SuperPangEngine {
     this.onHudUpdate = onHudUpdate;
     this.audio = new AudioEngine();
     this.storyProgress = loadStoryProgress();
+    this.achSave = loadAchievements();
 
     try {
       this.highScore = parseInt(localStorage.getItem(HIGHSCORE_KEY) || '0', 10) || 0;
@@ -204,6 +260,35 @@ export class SuperPangEngine {
   }
 
   // =========================================================================
+  // ACHIEVEMENTS SYSTEM
+  // =========================================================================
+  private unlockAchievement(id: string): void {
+    if (this.achSave.unlocked[id]) return;
+    const def = ACHIEVEMENTS.find((a) => a.id === id);
+    if (!def) return;
+
+    this.achSave.unlocked[id] = Date.now();
+    saveAchievements(this.achSave);
+    this.achToastQueue.push(def);
+
+    if (!this.activeAchToast) {
+      this.popNextAchievementToast();
+    } else {
+      this.emitHud();
+    }
+  }
+
+  private popNextAchievementToast(): void {
+    const next = this.achToastQueue.shift() || null;
+    this.activeAchToast = next;
+    this.achToastTimer = next ? 4.4 : 0;
+    if (next) {
+      this.audio.achievement();
+    }
+    this.emitHud();
+  }
+
+  // =========================================================================
   // INPUT CONTROLS
   // =========================================================================
   public setLeft(held: boolean): void {
@@ -216,6 +301,10 @@ export class SuperPangEngine {
 
   public triggerFire(): void {
     this.audio.init();
+    if (this.state === 'CINEMATIC') {
+      this.advanceCinematicShot();
+      return;
+    }
     if (this.state === 'MAP_TRAVEL') {
       this.finishMapTravel();
       return;
@@ -236,17 +325,148 @@ export class SuperPangEngine {
   }
 
   // =========================================================================
-  // STORY MODE & ARCADE FLOW CONTROLS
+  // SEQUENCE FLOW QUEUE (CINEMATICS / CUTSCENES / BOSSES / TRAVEL)
+  // =========================================================================
+  private enqueueFlow(steps: FlowStep[]): void {
+    this.flowQueue = [...steps];
+    this.advanceFlowQueue();
+  }
+
+  private advanceFlowQueue(): void {
+    const step = this.flowQueue.shift();
+    if (!step) return;
+
+    switch (step.type) {
+      case 'CINEMATIC': {
+        this.activeCinematic = step.cinematic;
+        this.activeCutscene = null;
+        this.cinematicElapsed = 0;
+        this.state = 'CINEMATIC';
+        this.clearInputs();
+        this.audio.setDynamicState({ timeRatio: 1, comboCount: 0, frozen: false, bubbleCount: 0 });
+        this.audio.playTheme(step.cinematic.music);
+        this.emitHud();
+        break;
+      }
+
+      case 'CUTSCENE': {
+        this.activeCutscene = step.cutscene;
+        this.activeCinematic = null;
+        this.state = 'STORY_CUTSCENE';
+        this.clearInputs();
+        this.audio.setDynamicState({
+          timeRatio: 1,
+          comboCount: 0,
+          frozen: false,
+          bubbleCount: this.bubbles.length
+        });
+        this.audio.playTheme(step.cutscene.musicMood);
+        this.emitHud();
+        break;
+      }
+
+      case 'START_STAGE': {
+        const lvl = LEVELS[this.levelIndex] || LEVELS[0];
+        this.activeCutscene = null;
+        this.activeCinematic = null;
+        this.state = 'PLAYING';
+        this.stageIntroTimer = 2.6;
+        if (lvl.theme === 'moon') {
+          this.unlockAchievement('space_tourist');
+        }
+        this.audio.playTheme(lvl.theme);
+        this.emitHud();
+        break;
+      }
+
+      case 'START_BOSS': {
+        this.activeCutscene = null;
+        this.activeCinematic = null;
+        this.spawnActBoss(step.act);
+        break;
+      }
+
+      case 'MAP_TRAVEL': {
+        this.activeCutscene = null;
+        this.activeCinematic = null;
+        this.startMapTravel(step.from, step.to);
+        break;
+      }
+
+      case 'SHOW_VICTORY': {
+        this.activeCutscene = null;
+        this.activeCinematic = null;
+        this.state = 'VICTORY';
+        this.audio.stopMusic();
+        this.audio.victory();
+        this.emitHud();
+        break;
+      }
+
+      case 'RESTORE_STATE': {
+        this.activeCutscene = null;
+        this.activeCinematic = null;
+        this.state = step.state;
+        if (this.state === 'PAUSED') {
+          const lvl = LEVELS[this.levelIndex] || LEVELS[0];
+          this.audio.playTheme(this.boss ? this.boss.def.music : lvl.theme);
+          this.audio.setDucked(true);
+        } else if (this.state === 'PLAYING') {
+          const lvl = LEVELS[this.levelIndex] || LEVELS[0];
+          this.audio.playTheme(this.boss ? this.boss.def.music : lvl.theme);
+        } else {
+          this.audio.stopMusic();
+        }
+        this.emitHud();
+        break;
+      }
+    }
+  }
+
+  public advanceCinematicShot(): void {
+    if (this.state !== 'CINEMATIC' || !this.activeCinematic) return;
+    const def = this.activeCinematic;
+    const curIdx = cinematicShotIndex(def, this.cinematicElapsed);
+    if (curIdx < def.shots.length - 1) {
+      this.cinematicElapsed = cinematicShotStart(def, curIdx + 1);
+    } else {
+      this.skipCinematic();
+    }
+  }
+
+  public skipCinematic(): void {
+    if (this.state !== 'CINEMATIC') return;
+    this.activeCinematic = null;
+    this.advanceFlowQueue();
+  }
+
+  public completeCutscene(): void {
+    if (this.state !== 'STORY_CUTSCENE') return;
+    this.activeCutscene = null;
+    this.advanceFlowQueue();
+  }
+
+  // =========================================================================
+  // STORY MODE, ARCADE & CONTINUE CONTROLS
   // =========================================================================
   public startStoryAtLevel(index: number, resetScore = index === 0): void {
     this.audio.init();
     this.gameMode = 'STORY';
-    if (resetScore) {
+    if (resetScore && index === 0) {
       this.score = 0;
       this.newRecordReached = false;
-    } else if (this.storyProgress.storyScore > 0 && this.score === 0) {
-      this.score = this.storyProgress.storyScore;
+      this.achSave.run = { continues: 0, livesLost: 0, valid: true };
+      saveAchievements(this.achSave);
+    } else {
+      if (index !== 0) {
+        this.achSave.run.valid = false;
+        saveAchievements(this.achSave);
+      }
+      if (this.storyProgress.storyScore > 0 && this.score === 0) {
+        this.score = this.storyProgress.storyScore;
+      }
     }
+
     this.lives = 3;
     this.comboCount = 0;
     this.comboTimer = 0;
@@ -260,12 +480,16 @@ export class SuperPangEngine {
     saveStoryProgress(this.storyProgress);
 
     this.loadLevel(index, false, false);
-    this.beginStageOrIntroCutscene();
+    this.beginStageFlow(index);
   }
 
   public continueStory(): void {
     const target = this.storyProgress.currentStageIndex || 0;
-    this.startStoryAtLevel(target, false);
+    if (target === 0) {
+      this.startStoryAtLevel(0, true);
+    } else {
+      this.startStoryAtLevel(target, false);
+    }
   }
 
   public startAtLevel(index: number): void {
@@ -276,90 +500,116 @@ export class SuperPangEngine {
     this.newRecordReached = false;
     this.comboCount = 0;
     this.comboTimer = 0;
+    this.flowQueue = [];
     this.activeCutscene = null;
+    this.activeCinematic = null;
     this.activeRadioComm = null;
-    this.state = 'PLAYING';
-    this.loadLevel(index, false, true);
-    this.emitHud();
+
+    this.achSave.run = {
+      continues: 0,
+      livesLost: 0,
+      valid: index === 0
+    };
+    saveAchievements(this.achSave);
+
+    this.loadLevel(index, false, false);
+    this.enqueueFlow([{ type: 'START_STAGE' }]);
   }
 
-  private beginStageOrIntroCutscene(): void {
-    const lvl = LEVELS[this.levelIndex] || LEVELS[0];
+  public startBossDirect(act: number): void {
+    this.audio.init();
+    const bossDef = getBossByAct(act);
+    this.gameMode = 'ARCADE';
+    this.lives = 3;
+    this.comboCount = 0;
+    this.comboTimer = 0;
+    this.achSave.run.valid = false;
+    saveAchievements(this.achSave);
+
+    this.loadLevel(bossDef.levelIndex, false, false);
+    this.bubbles = [];
+    this.enqueueFlow([{ type: 'START_BOSS', act }]);
+  }
+
+  private beginStageFlow(index: number): void {
+    const lvl = LEVELS[index] || LEVELS[0];
+    const steps: FlowStep[] = [];
+
     if (this.gameMode === 'STORY') {
-      const intro = buildStoryCutscene(this.levelIndex, 'intro', lvl.name, lvl.country, lvl.flag);
-      if (intro) {
-        this.activeCutscene = intro;
-        this.postCutsceneAction = 'START_STAGE';
-        this.state = 'STORY_CUTSCENE';
-        this.clearInputs();
-        this.audio.setDynamicState({ timeRatio: 1, comboCount: 0, frozen: false, bubbleCount: this.bubbles.length });
-        this.audio.playTheme(intro.musicMood);
-        this.emitHud();
-        return;
+      const actIdx = ACT_FIRST_LEVEL_INDEX.indexOf(index);
+      if (actIdx !== -1) {
+        const actIntro = getActIntroCinematic(actIdx + 1);
+        if (actIntro) steps.push({ type: 'CINEMATIC', cinematic: actIntro });
       }
+      const intro = buildStoryCutscene(index, 'intro', lvl.name, lvl.country, lvl.flag);
+      if (intro) steps.push({ type: 'CUTSCENE', cutscene: intro });
     }
-    this.state = 'PLAYING';
-    this.audio.playTheme(lvl.theme);
-    this.emitHud();
+
+    steps.push({ type: 'START_STAGE' });
+    this.enqueueFlow(steps);
   }
 
   public replayCutscene(cutscene: StoryCutsceneDef): void {
     this.audio.init();
-    this.previousStateBeforeReplay = this.state === 'STORY_CUTSCENE' ? 'START' : this.state;
-    this.activeCutscene = cutscene;
-    this.postCutsceneAction = 'RETURN_PREVIOUS';
-    this.state = 'STORY_CUTSCENE';
-    this.clearInputs();
-    this.audio.playTheme(cutscene.musicMood);
-    this.emitHud();
+    const restore =
+      this.state === 'STORY_CUTSCENE' || this.state === 'CINEMATIC' ? 'START' : this.state;
+    this.enqueueFlow([
+      { type: 'CUTSCENE', cutscene },
+      { type: 'RESTORE_STATE', state: restore }
+    ]);
   }
 
-  public completeCutscene(): void {
-    if (this.state !== 'STORY_CUTSCENE') return;
-    const action = this.postCutsceneAction;
-    this.activeCutscene = null;
-
-    if (action === 'START_STAGE') {
-      const lvl = LEVELS[this.levelIndex] || LEVELS[0];
-      this.state = 'PLAYING';
-      this.stageIntroTimer = 2.6;
-      this.audio.playTheme(lvl.theme);
-      this.emitHud();
-    } else if (action === 'START_TRAVEL') {
-      this.startMapTravel(this.levelIndex, this.levelIndex + 1);
-    } else if (action === 'SHOW_VICTORY') {
-      this.state = 'VICTORY';
-      this.audio.stopMusic();
-      this.audio.victory();
-      this.emitHud();
-    } else {
-      this.state = this.previousStateBeforeReplay;
-      if (this.state === 'PAUSED') {
-        const lvl = LEVELS[this.levelIndex] || LEVELS[0];
-        this.audio.playTheme(lvl.theme);
-        this.audio.setDucked(true);
-      } else {
-        this.audio.stopMusic();
-      }
-      this.emitHud();
-    }
-  }
-
-  public retryCurrentStage(): void {
+  public replayCinematic(cinematic: CinematicDef): void {
     this.audio.init();
+    const restore =
+      this.state === 'STORY_CUTSCENE' || this.state === 'CINEMATIC' ? 'START' : this.state;
+    this.enqueueFlow([
+      { type: 'CINEMATIC', cinematic },
+      { type: 'RESTORE_STATE', state: restore }
+    ]);
+  }
+
+  /** Uses an Arcade Continue after Game Over (increments continuesUsed, disabling the 1CC "Sem Continue" achievement for this run) */
+  public useContinue(): void {
+    this.audio.init();
+    this.achSave.run.continues += 1;
+    saveAchievements(this.achSave);
+
     this.lives = 3;
     this.comboCount = 0;
     this.comboTimer = 0;
     this.activeRadioComm = null;
+    this.stageTookHit = true;
+
+    if (this.boss && !this.bossClearedThisStage) {
+      // Resume right inside the Sonic Wings Boss Battle with fresh lives & timer!
+      this.boss.bullets = [];
+      this.boss.beams = [];
+      this.timeRemaining = this.boss.def.timeLimit;
+      this.player = this.createPlayer();
+      this.player.invulnTimer = 2.4;
+      this.state = 'PLAYING';
+      this.audio.playTheme(this.boss.def.music);
+      this.emitHud();
+      return;
+    }
+
     this.state = 'PLAYING';
     this.loadLevel(this.levelIndex, false, true);
     this.emitHud();
   }
 
+  public retryCurrentStage(): void {
+    this.useContinue();
+  }
+
   public returnToTitle(): void {
     this.state = 'START';
+    this.flowQueue = [];
     this.activeCutscene = null;
+    this.activeCinematic = null;
     this.activeRadioComm = null;
+    this.boss = null;
     this.clearInputs();
     this.audio.stopMusic();
     this.emitHud();
@@ -392,9 +642,11 @@ export class SuperPangEngine {
     this.audio.toggleMusic();
     if (this.audio.musicEnabled) {
       if (this.state === 'PLAYING') {
-        this.audio.playTheme(LEVELS[this.levelIndex].theme);
+        this.audio.playTheme(this.boss ? this.boss.def.music : LEVELS[this.levelIndex].theme);
       } else if (this.state === 'STORY_CUTSCENE' && this.activeCutscene) {
         this.audio.playTheme(this.activeCutscene.musicMood);
+      } else if (this.state === 'CINEMATIC' && this.activeCinematic) {
+        this.audio.playTheme(this.activeCinematic.music);
       }
     }
     this.emitHud();
@@ -419,22 +671,28 @@ export class SuperPangEngine {
     if (this.levelIndex >= LEVELS.length - 1) return;
     this.audio.init();
 
-    // Check if current stage has a Story Mode Act-Finale Outro Cutscene before traveling!
+    const steps: FlowStep[] = [];
     if (this.gameMode === 'STORY') {
+      const actEndIdx = ACT_END_LEVEL_INDEX.indexOf(this.levelIndex);
       const lvl = LEVELS[this.levelIndex];
+
+      if (actEndIdx !== -1) {
+        const actNum = actEndIdx + 1;
+        const postBoss = buildBossCutscene(actNum, 'post');
+        if (postBoss) steps.push({ type: 'CUTSCENE', cutscene: postBoss });
+      }
+
       const outro = buildStoryCutscene(this.levelIndex, 'outro', lvl.name, lvl.country, lvl.flag);
-      if (outro) {
-        this.activeCutscene = outro;
-        this.postCutsceneAction = 'START_TRAVEL';
-        this.state = 'STORY_CUTSCENE';
-        this.clearInputs();
-        this.audio.playTheme(outro.musicMood);
-        this.emitHud();
-        return;
+      if (outro) steps.push({ type: 'CUTSCENE', cutscene: outro });
+
+      if (actEndIdx !== -1) {
+        const actVictory = getActVictoryCinematic(actEndIdx + 1);
+        if (actVictory) steps.push({ type: 'CINEMATIC', cinematic: actVictory });
       }
     }
 
-    this.startMapTravel(this.levelIndex, this.levelIndex + 1);
+    steps.push({ type: 'MAP_TRAVEL', from: this.levelIndex, to: this.levelIndex + 1 });
+    this.enqueueFlow(steps);
   }
 
   public skipMapTravel(): void {
@@ -464,7 +722,33 @@ export class SuperPangEngine {
   private finishMapTravel(): void {
     if (this.state !== 'MAP_TRAVEL') return;
     this.loadLevel(this.travel.toIndex, true, false);
-    this.beginStageOrIntroCutscene();
+    this.beginStageFlow(this.travel.toIndex);
+  }
+
+  // =========================================================================
+  // BOSS SPAWNING (SONIC WINGS AERIAL ENCOUNTER)
+  // =========================================================================
+  private spawnActBoss(act: number): void {
+    const def = getBossByAct(act);
+    this.boss = createBoss(def.id);
+    this.bossLivesLost = 0;
+    this.bossDeathExplosionAccum = 0;
+    this.bossHitCounter = 0;
+
+    // Open aerial dogfight arena: clear static blocks & grant fresh boss timer
+    this.blocks = [];
+    this.harpoons = [];
+    this.bubbles = def.startBubbles.map((sb) =>
+      this.createBubble(sb.x, sb.y, sb.size, sb.dir, -120)
+    );
+    this.timeLimit = def.timeLimit;
+    this.timeRemaining = def.timeLimit;
+    this.player.invulnTimer = Math.max(this.player.invulnTimer, 2.2);
+
+    this.state = 'PLAYING';
+    this.audio.warningSiren();
+    this.audio.playTheme(def.music);
+    this.emitHud();
   }
 
   // =========================================================================
@@ -477,7 +761,7 @@ export class SuperPangEngine {
       y: GROUND_Y,
       w: 38,
       h: 54,
-      speed: 332,
+      speed: 336,
       facing: 1,
       prevMoveDir: 0,
       vx: 0,
@@ -529,8 +813,11 @@ export class SuperPangEngine {
     this.comboTimer = 0;
     this.midCommTriggered = false;
     this.stagePlayElapsed = 0;
+    this.stageTookHit = false;
     this.activeRadioComm = null;
     this.radioCommTimer = 0;
+    this.boss = null;
+    this.bossClearedThisStage = false;
 
     const prevPlayer = this.player;
     this.player = this.createPlayer();
@@ -562,15 +849,19 @@ export class SuperPangEngine {
     }
   }
 
+  private showRadioComm(comm: RadioCommDef, duration = 5.4): void {
+    this.activeRadioComm = comm;
+    this.radioCommTimer = duration;
+    this.audio.radioChime();
+    this.emitHud();
+  }
+
   private triggerMidStageRadioComm(): void {
-    if (this.midCommTriggered || this.gameMode !== 'STORY') return;
+    if (this.midCommTriggered || this.gameMode !== 'STORY' || this.boss) return;
     const script = STAGE_STORY_SCRIPT[this.levelIndex];
     if (!script?.midComm) return;
     this.midCommTriggered = true;
-    this.activeRadioComm = script.midComm;
-    this.radioCommTimer = 5.4;
-    this.audio.radioChime();
-    this.emitHud();
+    this.showRadioComm(script.midComm, 5.4);
   }
 
   // =========================================================================
@@ -578,15 +869,22 @@ export class SuperPangEngine {
   // =========================================================================
   private tryFireHarpoon(): boolean {
     if (this.state !== 'PLAYING') return false;
-    const maxHarpoons = this.player.doubleTimer > 0 ? 2 : 1;
+    const bossOverdrive = this.boss !== null;
+    const maxHarpoons = bossOverdrive
+      ? this.player.doubleTimer > 0
+        ? 3
+        : 2
+      : this.player.doubleTimer > 0
+      ? 2
+      : 1;
     if (this.harpoons.length >= maxHarpoons) return false;
 
     this.harpoons.push({
       x: this.player.x,
       topY: this.player.y - this.player.h,
       bottomY: GROUND_Y,
-      speed: 660,
-      sticky: this.player.stickyTimer > 0,
+      speed: bossOverdrive ? 820 : 660,
+      sticky: !bossOverdrive && this.player.stickyTimer > 0,
       latched: false,
       latchTimer: 4.5,
       waveOffset: 0,
@@ -599,8 +897,18 @@ export class SuperPangEngine {
     return true;
   }
 
-  private addScore(points: number, x?: number, y?: number, text?: string, color = '#fef08a', scale = 1): void {
+  private addScore(
+    points: number,
+    x?: number,
+    y?: number,
+    text?: string,
+    color = '#fef08a',
+    scale = 1
+  ): void {
     this.score += points;
+    if (this.score >= 50000) this.unlockAchievement('score_50k');
+    if (this.score >= 100000) this.unlockAchievement('score_100k');
+
     if (this.score > this.highScore) {
       this.highScore = this.score;
       this.newRecordReached = true;
@@ -658,7 +966,13 @@ export class SuperPangEngine {
     }
   }
 
-  private spawnParticles(x: number, y: number, color: string, count = 14, speedScale = 1): void {
+  private spawnParticles(
+    x: number,
+    y: number,
+    color: string,
+    count = 14,
+    speedScale = 1
+  ): void {
     for (let i = 0; i < count; i++) {
       const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.5;
       const speed = (75 + Math.random() * 205) * speedScale;
@@ -682,10 +996,12 @@ export class SuperPangEngine {
   private maybeSpawnPowerup(x: number, y: number, chance = 0.2): void {
     if (Math.random() > chance) return;
     let type: PowerupType;
-    if (this.lives < 5 && Math.random() < 0.06) {
+    if (this.lives < 5 && Math.random() < 0.08) {
       type = 'extralife';
     } else {
-      const standard: PowerupType[] = ['double', 'sticky', 'shield', 'freeze', 'dynamite'];
+      const standard: PowerupType[] = this.boss
+        ? ['double', 'shield', 'freeze', 'dynamite']
+        : ['double', 'sticky', 'shield', 'freeze', 'dynamite'];
       type = standard[Math.floor(Math.random() * standard.length)];
     }
     this.powerups.push({
@@ -694,7 +1010,7 @@ export class SuperPangEngine {
       vy: -120,
       r: 17,
       type,
-      life: 8.5,
+      life: 9.0,
       spin: 0
     });
   }
@@ -711,9 +1027,17 @@ export class SuperPangEngine {
     this.spawnParticles(b.x, b.y, '#ffffff', 7, 0.75);
     this.spawnRing(b.x, b.y, b.r * 1.85, mainColor);
 
+    this.unlockAchievement('first_pop');
+    if (this.freezeTimer > 0) {
+      this.unlockAchievement('ice_time');
+    }
+
     if (!fromDynamite) {
       this.comboCount = this.comboTimer > 0 ? this.comboCount + 1 : 1;
       this.comboTimer = 2.1;
+
+      if (this.comboCount >= 5) this.unlockAchievement('combo_5');
+      if (this.comboCount >= 10) this.unlockAchievement('combo_10');
 
       const comboBonus = this.comboCount >= 2 ? (this.comboCount - 1) * 100 : 0;
       const totalPts = spec.points + comboBonus;
@@ -729,14 +1053,19 @@ export class SuperPangEngine {
         this.shakeTimer = Math.max(this.shakeTimer, 0.12);
         this.shakeIntensity = Math.max(this.shakeIntensity, b.size === 3 ? 4.5 : 2.8);
       }
-      this.maybeSpawnPowerup(b.x, b.y, 0.2);
+      this.maybeSpawnPowerup(b.x, b.y, 0.22);
 
-      // Trigger mid-stage tactical radio comm after stage intro banner clears
       if (!this.midCommTriggered && this.stageIntroTimer <= 0.2) {
         this.triggerMidStageRadioComm();
       }
     } else {
-      this.addScore(Math.floor(spec.points / 2), b.x, b.y - 8, `+${Math.floor(spec.points / 2)}`, '#fbbf24');
+      this.addScore(
+        Math.floor(spec.points / 2),
+        b.x,
+        b.y - 8,
+        `+${Math.floor(spec.points / 2)}`,
+        '#fbbf24'
+      );
     }
 
     if (b.size > 0) {
@@ -744,8 +1073,20 @@ export class SuperPangEngine {
       const nextR = BUBBLE_SPECS[nextSize].radius;
       const offset = nextR * 0.68;
       const splitVy = Math.min(-255, -180 - nextSize * 44);
-      const leftB = this.createBubble(Math.max(LEFT_WALL + nextR, b.x - offset), b.y, nextSize, -1, splitVy);
-      const rightB = this.createBubble(Math.min(RIGHT_WALL - nextR, b.x + offset), b.y, nextSize, 1, splitVy);
+      const leftB = this.createBubble(
+        Math.max(LEFT_WALL + nextR, b.x - offset),
+        b.y,
+        nextSize,
+        -1,
+        splitVy
+      );
+      const rightB = this.createBubble(
+        Math.min(RIGHT_WALL - nextR, b.x + offset),
+        b.y,
+        nextSize,
+        1,
+        splitVy
+      );
       leftB.flashTimer = 0.07;
       rightB.flashTimer = 0.07;
       this.bubbles.push(leftB, rightB);
@@ -753,11 +1094,17 @@ export class SuperPangEngine {
   }
 
   private triggerDynamite(): void {
+    this.unlockAchievement('dynamite');
     this.audio.dynamite();
     this.hitstopTimer = 0.055;
     this.shakeTimer = 0.42;
     this.shakeIntensity = 9.5;
     this.flashAlpha = 0.68;
+
+    if (this.boss && isBossVulnerable(this.boss)) {
+      damageBoss(this.boss, 4);
+      this.addScore(800, this.boss.x, this.boss.y, 'BOMBA -4 HP!', '#fb7185', 1.15);
+    }
 
     const toSplit: number[] = [];
     for (let i = this.bubbles.length - 1; i >= 0; i--) {
@@ -774,6 +1121,14 @@ export class SuperPangEngine {
     const def = POWERUP_DEFS[p.type];
     this.addScore(250, p.x, p.y - 18, def.label, def.color, 1.05);
     this.spawnRing(p.x, p.y, 38, def.color);
+
+    if (!this.achSave.powerupTypes.includes(p.type)) {
+      this.achSave.powerupTypes.push(p.type);
+      saveAchievements(this.achSave);
+      if (this.achSave.powerupTypes.length >= 6) {
+        this.unlockAchievement('collector');
+      }
+    }
 
     if (p.type === 'double') {
       this.player.doubleTimer = def.duration;
@@ -798,8 +1153,10 @@ export class SuperPangEngine {
 
   private damagePlayer(reason = 'Você foi atingido!'): void {
     if (this.player.invulnTimer > 0) return;
+    this.stageTookHit = true;
 
     if (this.player.hasShield) {
+      this.unlockAchievement('shield_save');
       this.player.hasShield = false;
       this.player.invulnTimer = 2.0;
       this.hitstopTimer = 0.04;
@@ -821,6 +1178,10 @@ export class SuperPangEngine {
     }
 
     this.lives -= 1;
+    this.achSave.run.livesLost += 1;
+    saveAchievements(this.achSave);
+    if (this.boss) this.bossLivesLost += 1;
+
     this.comboCount = 0;
     this.comboTimer = 0;
     this.audio.hit();
@@ -836,6 +1197,14 @@ export class SuperPangEngine {
       this.clearInputs();
       this.audio.stopMusic();
       this.audio.gameOver();
+    } else if (this.boss) {
+      // Sonic Wings style in-place respawn during Boss Fight!
+      this.boss.bullets = [];
+      this.boss.beams = [];
+      this.player.invulnTimer = 2.6;
+      if (this.timeRemaining <= 1) {
+        this.timeRemaining = Math.max(45, Math.floor(this.boss.def.timeLimit * 0.5));
+      }
     } else {
       this.loadLevel(this.levelIndex, false, false);
     }
@@ -843,11 +1212,41 @@ export class SuperPangEngine {
   }
 
   private handleStageClear(): void {
+    // Check if this stage concludes an Act and requires its Sonic Wings Boss Battle first!
+    const actEndIdx = ACT_END_LEVEL_INDEX.indexOf(this.levelIndex);
+    if (actEndIdx !== -1 && !this.bossClearedThisStage) {
+      const actNum = actEndIdx + 1;
+      this.clearInputs();
+      const steps: FlowStep[] = [];
+      if (this.gameMode === 'STORY') {
+        const preBoss = buildBossCutscene(actNum, 'pre');
+        if (preBoss) steps.push({ type: 'CUTSCENE', cutscene: preBoss });
+      }
+      steps.push({ type: 'START_BOSS', act: actNum });
+      this.enqueueFlow(steps);
+      return;
+    }
+
     const timeBonus = Math.ceil(this.timeRemaining) * 50;
     this.stageTimeBonus = timeBonus;
     this.addScore(timeBonus);
     this.activeRadioComm = null;
     this.clearInputs();
+
+    // Stage-completion achievements
+    if (!this.stageTookHit) {
+      this.unlockAchievement('untouchable');
+    }
+    if (this.timeRemaining / Math.max(1, this.timeLimit) >= 0.7) {
+      this.unlockAchievement('speed_run');
+    }
+    if (!this.achSave.clearedStages.includes(this.levelIndex)) {
+      this.achSave.clearedStages.push(this.levelIndex);
+      saveAchievements(this.achSave);
+      if (this.achSave.clearedStages.length >= 12) {
+        this.unlockAchievement('world_traveler');
+      }
+    }
 
     if (this.gameMode === 'STORY') {
       const nextIdx = Math.min(LEVELS.length - 1, this.levelIndex + 1);
@@ -862,24 +1261,38 @@ export class SuperPangEngine {
       saveStoryProgress(this.storyProgress);
     }
 
+    // Final Stage (Mars — Stage 24) Completion!
     if (this.levelIndex >= LEVELS.length - 1) {
       this.victoryLivesBonus = this.lives * 2000;
       this.addScore(this.victoryLivesBonus);
 
-      // In Story Mode, play the cinematic Epilogue before showing Victory trophy modal!
       if (this.gameMode === 'STORY') {
-        const lvl = LEVELS[this.levelIndex];
-        const epilogue = buildStoryCutscene(this.levelIndex, 'outro', lvl.name, lvl.country, lvl.flag);
-        if (epilogue) {
-          this.activeCutscene = epilogue;
-          this.postCutsceneAction = 'SHOW_VICTORY';
-          this.state = 'STORY_CUTSCENE';
-          this.audio.playTheme(epilogue.musicMood);
-          this.emitHud();
-          return;
+        this.unlockAchievement('finish_story');
+        if (this.achSave.run.valid && this.achSave.run.continues === 0) {
+          this.unlockAchievement('no_continue');
+          if (this.achSave.run.livesLost === 0) {
+            this.unlockAchievement('perfect_run');
+          }
         }
+
+        const lvl = LEVELS[this.levelIndex];
+        const steps: FlowStep[] = [];
+        const postBoss = buildBossCutscene(5, 'post');
+        if (postBoss) steps.push({ type: 'CUTSCENE', cutscene: postBoss });
+        const epilogue = buildStoryCutscene(this.levelIndex, 'outro', lvl.name, lvl.country, lvl.flag);
+        if (epilogue) steps.push({ type: 'CUTSCENE', cutscene: epilogue });
+        const act5Vic = getActVictoryCinematic(5);
+        if (act5Vic) steps.push({ type: 'CINEMATIC', cinematic: act5Vic });
+        steps.push({ type: 'CINEMATIC', cinematic: getFinaleCinematic() });
+        steps.push({ type: 'SHOW_VICTORY' });
+        this.enqueueFlow(steps);
+        return;
       }
 
+      // Even in Arcade Mode, check 1CC if started from Stage 1!
+      if (this.achSave.run.valid && this.achSave.run.continues === 0) {
+        this.unlockAchievement('no_continue');
+      }
       this.state = 'VICTORY';
       this.audio.stopMusic();
       this.audio.victory();
@@ -960,7 +1373,8 @@ export class SuperPangEngine {
     for (let i = 1; i < pl.scarfNodes.length; i++) {
       const prev = pl.scarfNodes[i - 1];
       const curr = pl.scarfNodes[i];
-      const flutter = Math.sin(this.bgTime * (isMoving ? 19 : 7.5) - i * 0.9) * (isMoving ? 56 : 22);
+      const flutter =
+        Math.sin(this.bgTime * (isMoving ? 19 : 7.5) - i * 0.9) * (isMoving ? 56 : 22);
       curr.x += windX * dt;
       curr.y += (32 + flutter) * dt;
 
@@ -975,7 +1389,15 @@ export class SuperPangEngine {
   private update(dt: number): void {
     this.bgTime += dt;
 
-    // Live-world scenic tour cycling on the Title Screen!
+    // Achievement toast display countdown (runs across all states)
+    if (this.achToastTimer > 0) {
+      this.achToastTimer = Math.max(0, this.achToastTimer - dt);
+      if (this.achToastTimer === 0) {
+        this.popNextAchievementToast();
+      }
+    }
+
+    // Live-world scenic tour cycling on the Title Screen
     if (this.state === 'START') {
       this.cameraNormX = Math.sin(this.bgTime * 0.45) * 0.65;
       this.showcaseTimer += dt;
@@ -1023,11 +1445,21 @@ export class SuperPangEngine {
       return;
     }
 
+    if (this.state === 'CINEMATIC' && this.activeCinematic) {
+      const idx = cinematicShotIndex(this.activeCinematic, this.cinematicElapsed);
+      const shotTheme = this.activeCinematic.shots[idx]?.theme || LEVELS[this.levelIndex].theme;
+      updateAmbientWeather(dt, this.bgTime, shotTheme);
+      this.cinematicElapsed += dt;
+      if (this.cinematicElapsed >= cinematicTotalDuration(this.activeCinematic)) {
+        this.skipCinematic();
+      }
+      return;
+    }
+
     const currentTheme = LEVELS[this.levelIndex].theme;
     updateAmbientWeather(dt, this.bgTime, currentTheme);
 
     if (this.state === 'STORY_CUTSCENE') {
-      // Gentle cinematic camera drift while dialogue plays over the live destination!
       this.cameraNormX = Math.sin(this.bgTime * 0.38) * 0.45;
       this.updateScarfPhysics(dt);
       this.updateEffects(dt);
@@ -1081,14 +1513,15 @@ export class SuperPangEngine {
         this.activeRadioComm = null;
         this.emitHud();
       }
-    } else if (!this.midCommTriggered && this.stagePlayElapsed > 6.2) {
+    } else if (!this.midCommTriggered && !this.boss && this.stagePlayElapsed > 6.2) {
       this.triggerMidStageRadioComm();
     }
 
-    // 1. Timer
+    // 1. Timer (paused while boss warning banner or boss death sequence plays)
+    const timerActive = !this.boss || (!this.boss.dying && this.boss.warning <= 0);
     if (this.freezeTimer > 0) {
       this.freezeTimer = Math.max(0, this.freezeTimer - dt);
-    } else {
+    } else if (timerActive) {
       this.timeRemaining -= dt;
       if (this.timeRemaining <= 0) {
         this.timeRemaining = 0;
@@ -1097,7 +1530,7 @@ export class SuperPangEngine {
       }
     }
 
-    // Feed live gameplay state into Dynamic OST Engine!
+    // Feed live gameplay state into Dynamic OST Engine
     this.audio.setDynamicState({
       timeRatio: this.timeRemaining / Math.max(1, this.timeLimit),
       comboCount: this.comboCount,
@@ -1126,7 +1559,6 @@ export class SuperPangEngine {
     }
     pl.x = Math.max(LEFT_WALL + pl.w / 2, Math.min(RIGHT_WALL - pl.w / 2, pl.x));
 
-    // Smooth parallax camera norm (-1 left wall .. +1 right wall)
     const targetCam = (pl.x - WORLD_W / 2) / (WORLD_W / 2 - LEFT_WALL);
     this.cameraNormX += (targetCam - this.cameraNormX) * Math.min(1, dt * 6.5);
 
@@ -1150,7 +1582,6 @@ export class SuperPangEngine {
 
     this.updateScarfPhysics(dt);
 
-    // Buffered edge-triggered fire
     if (this.input.fireBufferTimer > 0) {
       this.input.fireBufferTimer = Math.max(0, this.input.fireBufferTimer - dt);
       if (this.tryFireHarpoon()) {
@@ -1158,13 +1589,71 @@ export class SuperPangEngine {
       }
     }
 
-    // 3. Harpoons
+    // 3. Harpoons (vs Blocks, Ceiling, Boss Projectiles & Boss Hull!)
     for (let i = this.harpoons.length - 1; i >= 0; i--) {
       const h = this.harpoons[i];
       h.waveOffset += dt * 25;
 
       if (!h.latched) {
         h.topY -= h.speed * dt;
+
+        // Intercept destructible boss bombs & feather blades mid-air!
+        if (this.boss && !this.boss.dying) {
+          for (let bi = this.boss.bullets.length - 1; bi >= 0; bi--) {
+            const bl = this.boss.bullets[bi];
+            if (bl.kind === 'bomb' || bl.kind === 'feather') {
+              if (
+                this.circleIntersectsVerticalLine(bl.x, bl.y, bl.r + 3, h.x, h.topY, h.bottomY)
+              ) {
+                this.boss.bullets.splice(bi, 1);
+                this.spawnParticles(bl.x, bl.y, '#fde047', 8, 0.8);
+                this.addScore(50, bl.x, bl.y, '+50', '#fde047', 0.85);
+              }
+            }
+          }
+
+          // Harpoon vs Boss Hull
+          if (isBossVulnerable(this.boss)) {
+            const box = bossHitbox(this.boss);
+            if (h.x >= box.x0 && h.x <= box.x1 && h.topY <= box.y1 && h.bottomY >= box.y0) {
+              const isCoreHit = Math.abs(h.x - this.boss.x) < 28;
+              const dmg = isCoreHit ? 2 : 1;
+              damageBoss(this.boss, dmg);
+              this.bossHitCounter += 1;
+              this.audio.bossHit();
+              this.spawnParticles(
+                h.x,
+                Math.min(h.topY + 14, box.y1),
+                isCoreHit ? '#f43f5e' : this.boss.def.accent,
+                isCoreHit ? 16 : 10,
+                0.95
+              );
+              this.addScore(
+                isCoreHit ? 300 : 120,
+                h.x,
+                box.y1 + 8,
+                isCoreHit ? 'CRÍTICO!' : '+120',
+                isCoreHit ? '#fb7185' : '#fef08a',
+                isCoreHit ? 1.1 : 0.9
+              );
+
+              if (this.bossHitCounter % 7 === 0 && !this.boss.dying) {
+                this.maybeSpawnPowerup(h.x, box.y1 + 12, 1.0);
+              }
+              if (this.boss.dying) {
+                this.bubbles = [];
+                this.shakeTimer = 2.8;
+                this.shakeIntensity = 8;
+                this.flashAlpha = 0.75;
+                this.audio.bossExplosion();
+              }
+
+              this.harpoons.splice(i, 1);
+              continue;
+            }
+          }
+        }
+
         let hitBlock = false;
         for (let bi = this.blocks.length - 1; bi >= 0; bi--) {
           const bl = this.blocks[bi];
@@ -1215,8 +1704,89 @@ export class SuperPangEngine {
       }
     }
 
-    // 4. Bubbles
+    // 3.5 Boss Simulation & Attacks (Sonic Wings Aerial Encounter!)
     const isFrozen = this.freezeTimer > 0;
+    if (this.boss) {
+      const bState = this.boss;
+      if (bState.dying) {
+        updateBoss(bState, dt, pl.x, pl.y - pl.h * 0.5);
+        this.bossDeathExplosionAccum += dt;
+        if (this.bossDeathExplosionAccum >= 0.28) {
+          this.bossDeathExplosionAccum = 0;
+          const ex = bState.x + (Math.random() - 0.5) * bState.def.w * 0.85;
+          const ey = bState.y + (Math.random() - 0.5) * bState.def.h * 0.7;
+          this.spawnParticles(ex, ey, '#fb923c', 22, 1.3);
+          this.spawnParticles(ex, ey, '#fde047', 12, 0.9);
+          this.spawnRing(ex, ey, 64, '#fb7185');
+          this.audio.bossExplosion();
+        }
+        if (bState.dyingT >= 2.75) {
+          const bonus = bState.def.bonus;
+          const bossId = bState.def.id;
+          this.addScore(bonus, bState.x, bState.y, `CHEFE DESTRUÍDO! +${bonus}`, '#fde047', 1.25);
+
+          this.unlockAchievement('boss_1');
+          if (this.bossLivesLost === 0) {
+            this.unlockAchievement('boss_perfect');
+          }
+          if (!this.achSave.bossesDefeated.includes(bossId)) {
+            this.achSave.bossesDefeated.push(bossId);
+            saveAchievements(this.achSave);
+            if (this.achSave.bossesDefeated.length >= 5) {
+              this.unlockAchievement('sky_master');
+            }
+          }
+
+          this.boss = null;
+          this.bossClearedThisStage = true;
+          this.bubbles = [];
+          this.handleStageClear();
+          return;
+        }
+      } else if (!isFrozen) {
+        const res = updateBoss(bState, dt, pl.x, pl.y - pl.h * 0.5);
+        updateBossProjectiles(bState, dt);
+
+        if (res.phaseChanged) {
+          this.audio.bossPhase();
+          this.shakeTimer = 0.45;
+          this.shakeIntensity = 7;
+          this.flashAlpha = 0.45;
+          this.maybeSpawnPowerup(bState.x, bState.y + 40, 1.0);
+
+          const bScript = BOSS_SCRIPT[bState.def.id];
+          if (bScript) {
+            this.showRadioComm(res.newPhase === 1 ? bScript.phase2 : bScript.phase3, 5.0);
+          }
+        }
+
+        if (res.spawnBubble && this.bubbles.length < 4) {
+          const dir: 1 | -1 = Math.random() < 0.5 ? 1 : -1;
+          const sx = Math.max(
+            LEFT_WALL + 40,
+            Math.min(RIGHT_WALL - 40, bState.x + dir * (bState.def.w * 0.3))
+          );
+          this.bubbles.push(
+            this.createBubble(sx, bState.y + bState.def.h * 0.35, bState.def.spawnSize, dir, -140)
+          );
+        }
+
+        if (
+          bossHitsPlayer(
+            bState,
+            pl.x,
+            pl.y - pl.h * 0.48,
+            pl.w * 0.32,
+            pl.h * 0.42
+          )
+        ) {
+          this.damagePlayer(`Abatido por ${bState.def.name}!`);
+          if (this.state !== 'PLAYING') return;
+        }
+      }
+    }
+
+    // 4. Bubbles
     const bounceFactor = lvl.spaceStage ? 0.88 : 1.0;
 
     for (let i = this.bubbles.length - 1; i >= 0; i--) {
@@ -1314,9 +1884,9 @@ export class SuperPangEngine {
       if (p.life <= 0) this.powerups.splice(i, 1);
     }
 
-    // 6. Effects & Stage Clear Check
+    // 6. Effects & Stage Clear Check (only when no active boss remains!)
     this.updateEffects(dt);
-    if (this.bubbles.length === 0) {
+    if (!this.boss && this.bubbles.length === 0) {
       this.handleStageClear();
       return;
     }
@@ -1368,6 +1938,12 @@ export class SuperPangEngine {
     const ctx = this.ctx;
     ctx.save();
 
+    if (this.state === 'CINEMATIC' && this.activeCinematic) {
+      renderCinematic(ctx, this.activeCinematic, this.cinematicElapsed, this.bgTime);
+      ctx.restore();
+      return;
+    }
+
     if (this.state === 'MAP_TRAVEL') {
       renderMapTravel(ctx, this.travel, this.bgTime);
       ctx.restore();
@@ -1382,17 +1958,32 @@ export class SuperPangEngine {
     }
 
     const lvl = LEVELS[this.levelIndex] || LEVELS[0];
-    drawBackground(ctx, lvl.theme, this.bgTime, this.freezeTimer, this.cameraNormX);
+    drawBackground(
+      ctx,
+      lvl.theme,
+      this.bgTime,
+      this.freezeTimer,
+      this.cameraNormX,
+      this.boss ? this.boss.phase : -1
+    );
     drawArenaFrame(ctx, lvl.theme, this.cameraNormX);
     drawBlocks(ctx, this.blocks, lvl.theme);
     drawHarpoons(ctx, this.harpoons, this.bgTime);
+
+    if (this.boss) {
+      drawBoss(ctx, this.boss);
+      drawBossProjectiles(ctx, this.boss, this.bgTime);
+    }
+
     drawPowerups(ctx, this.powerups, this.bgTime);
     drawBubbles(ctx, this.bubbles, lvl, this.bgTime, this.freezeTimer);
     drawPlayer(ctx, this.player, this.state, this.bgTime, Boolean(lvl.spaceStage));
     drawEffects(ctx, this.rings, this.shards, this.particles, this.popups);
 
-    // Avoid overlapping stage banner while a Radio Comm Toast is visible
-    if (!this.activeRadioComm) {
+    if (this.boss) {
+      drawBossHud(ctx, this.boss);
+      drawBossWarning(ctx, this.boss, this.bgTime);
+    } else if (!this.activeRadioComm) {
       drawStageIntroBanner(ctx, lvl, this.stageIntroTimer, this.state);
     }
 
@@ -1406,7 +1997,8 @@ export class SuperPangEngine {
 
   private emitHud(): void {
     const lvl = LEVELS[this.levelIndex] || LEVELS[0];
-    const ost = OST_TRACKS[lvl.theme];
+    const ostKey = this.boss ? this.boss.def.music : lvl.theme;
+    const ost = OST_TRACKS[ostKey];
     this.onHudUpdate({
       state: this.state,
       gameMode: this.gameMode,
@@ -1439,7 +2031,13 @@ export class SuperPangEngine {
       activeCutscene: this.activeCutscene,
       activeRadioComm: this.activeRadioComm,
       storyUnlockedIndex: this.storyProgress.unlockedStageIndex,
-      storyCompleted: this.storyProgress.completed
+      storyCompleted: this.storyProgress.completed,
+      bossActive: this.boss !== null,
+      bossName: this.boss ? this.boss.def.name : '',
+      achievementToast: this.activeAchToast,
+      unlockedAchievementIds: Object.keys(this.achSave.unlocked),
+      continuesUsed: this.achSave.run.continues,
+      runValid: this.achSave.run.valid
     });
   }
 }
